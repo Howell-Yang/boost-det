@@ -17,7 +17,7 @@ import warnings
 
 from .coco import CocoDataset
 from .xml_dataset import XMLDataset
-
+from .coco128 import Coco128Dataset
 
 def build_dataset(cfg, mode):
     dataset_cfg = copy.deepcopy(cfg)
@@ -37,5 +37,7 @@ def build_dataset(cfg, mode):
         return CocoDataset(mode=mode, **dataset_cfg)
     elif name == "XMLDataset":
         return XMLDataset(mode=mode, **dataset_cfg)
+    elif name == "Coco128Dataset":
+        return Coco128Dataset(mode=mode, **dataset_cfg)
     else:
         raise NotImplementedError("Unknown dataset type!")
