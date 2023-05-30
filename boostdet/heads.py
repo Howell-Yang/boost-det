@@ -150,48 +150,53 @@ class GeneralizedFocalLoss(nn.Module):
             weight_targets = cls_score.detach().sigmoid()
             weight_targets = weight_targets.max(dim=1)[0][pos_index]
 
-
-            # 计算IoU损失
-            pos_bbox_pred_corners = self.distribution_project(pos_bbox_pred)
-            pos_decode_bbox_pred = distance2bbox(
-                pos_grid_cell_centers, pos_bbox_pred_corners
-            )
-            pos_decode_bbox_targets = pos_bbox_targets / stride
-            score[pos_inds] = bbox_overlaps(
-                pos_decode_bbox_pred.detach(), pos_decode_bbox_targets, is_aligned=True
-            )
-            pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
-            target_corners = bbox2distance(
-                pos_grid_cell_centers, pos_decode_bbox_targets, self.reg_max
-            ).reshape(-1)
-
-            # IoU loss
-            loss_bbox = self.loss_bbox(
-                pos_decode_bbox_pred,
-                pos_decode_bbox_targets,
-                weight=weight_targets,
-                avg_factor=1.0,
-            )
-
             # dfl loss
             loss_dfl = self.loss_dfl(
-                pred_corners,
-                target_corners,
+                pos_bbox_pred,
+                pos_bbox_targets,
                 weight=weight_targets[:, None].expand(-1, 4).reshape(-1),
                 avg_factor=4.0,
             )
+
+            # 计算IoU损失
+            loss_bbox = bbox_pred.sum() * 0
+            # pos_bbox_pred_corners = self.distribution_project(pos_bbox_pred)
+            # pos_decode_bbox_pred = distance2bbox(
+            #     pos_grid_cell_centers, pos_bbox_pred_corners
+            # )
+            # pos_decode_bbox_targets = pos_bbox_targets / stride
+            # score[pos_inds] = bbox_overlaps(
+            #     pos_decode_bbox_pred.detach(), pos_decode_bbox_targets, is_aligned=True
+            # )
+            # pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
+            # target_corners = bbox2distance(
+            #     pos_grid_cell_centers, pos_decode_bbox_targets, self.reg_max
+            # ).reshape(-1)
+
+            # # IoU loss
+            # loss_bbox = self.loss_bbox(
+            #     pos_decode_bbox_pred,
+            #     pos_decode_bbox_targets,
+            #     weight=weight_targets,
+            #     avg_factor=1.0,
+            # )
+            
+            # Cls Loss
+            loss_qfl = bbox_pred.sum() * 0
+
         else: # 没有正样本
             loss_bbox = bbox_pred.sum() * 0
             loss_dfl = bbox_pred.sum() * 0
+            loss_qfl = bbox_pred.sum() * 0
             weight_targets = torch.tensor(0).to(cls_score.device)
 
         # qfl loss
-        loss_qfl = self.loss_qfl(
-            cls_score,
-            (cls_target, score),
-            weight=None,
-            avg_factor=num_total_samples,
-        )
+        # loss_qfl = self.loss_qfl(
+        #     cls_score,
+        #     (cls_target, score),
+        #     weight=None,
+        #     avg_factor=num_total_samples,
+        # )
 
         return loss_qfl, loss_bbox, loss_dfl, weight_targets.sum()
 
@@ -215,7 +220,7 @@ class GeneralizedFocalLoss(nn.Module):
         )
 
         # 第三步，计算总loss
-        avg_factor = sum(avg_factor).item()
+        avg_factor = max(1.0, sum(avg_factor).item())
         loss_bbox = loss_bbox / avg_factor  #IoU损失，与bbox个数有关
         loss_dfl = loss_dfl / avg_factor # DFL损失，与bbox个数有关
         loss = loss_qfl + loss_bbox + loss_dfl
