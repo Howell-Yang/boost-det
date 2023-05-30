@@ -45,6 +45,7 @@ class GeneralizedFocalLoss(nn.Module):
         self.reg_max = 7
         self.num_classes = num_classes
         self.use_sigmoid = use_sigmoid
+        self.regression_scale = torch.nn.Linear(self.num_classes, self.num_classes)
         self.distribution_project = Integral(self.reg_max)
         self.loss_qfl = QualityFocalLoss(
             use_sigmoid=self.use_sigmoid,
@@ -66,6 +67,7 @@ class GeneralizedFocalLoss(nn.Module):
         feat_size = (image_size[0] // stride, image_size[1] // stride)
         cls_targets = []
         bbox_targets = []
+        num_total_samples = 0
         for i, label_info in enumerate(label_infos):
             cls_target = torch.new_ones((feat_size[0], feat_size[1]), dtype=torch.long) * self.num_classes # H, W
             bbox_target = torch.new_zeros((feat_size[0], feat_size[1], self.num_classes,  4), dtype=torch.float32) # H, W, num_cls, 4
@@ -84,44 +86,72 @@ class GeneralizedFocalLoss(nn.Module):
                         if grid_cy < 0 or grid_cy < 0:
                             continue
                         cls_target[grid_cx, grid_cy] = category # 0 - num_cls - 1 for objects, num_cls for background
+                        num_total_samples += 1
+
+                        # 计算每个位置, 相对中心位置的偏移量 ---> 由于中心点不一定在bbox内，所以回归坐标是存在负值的情况的
+                        left_offset = grid_cx - x1 / stride  # 上下左右坐标偏移量，从当前点，向边界点移动；符合直觉
+                        right_offset = x2 / stride - grid_cx
+                        top_offset = grid_cy - y1/stride
+                        bottom_offset = y2/stride - grid_cy
+                        bbox_target[grid_cx, grid_cy, category, 0] = left_offset
+                        bbox_target[grid_cx, grid_cy, category, 1] = right_offset
+                        bbox_target[grid_cx, grid_cy, category, 2] = top_offset
+                        bbox_target[grid_cx, grid_cy, category, 3] = bottom_offset
+                        
+                        # 回归的目标是每个坐标线，相对中心点的偏移量
+                        # 但是，中间还涉及到target层面的scale
+                        # 如果target层面有可学习的target scale参数，能够更好地处理
             cls_targets.append(cls_target)
             bbox_targets.append(bbox_target)
-        return cls_targets, bbox_targets
+        return cls_targets, bbox_targets, num_total_samples
 
     def loss_single(
         self,
         cls_score, # logits before sigmoid: N, num_classes, H, W
         bbox_pred, # logits before sigmoid: N, 4 * num_classes *(reg_max + 1), H, W
-        cls_target, #
-        bbox_targets,
+        cls_target, # N, H, W
+        bbox_targets, # N, H, W, num_classes, 4
         stride,
         num_total_samples,
     ):
 
-        cls_score = cls_score.reshape(-1, self.num_classes)  # N, C
-        bbox_pred = bbox_pred.reshape(-1, 4 * (self.reg_max + 1)) # regrssion ---> 不同类别用的相同的回归，这里是不合理的
+        # cls_score = cls_score.reshape(-1, self.num_classes)  # N, num_classes, H, W
+        # bbox_pred = bbox_pred.reshape(-1, self.num_classes, 4 * (self.reg_max + 1)) # regrssion ---> 不同类别用的相同的回归，这里是不合理的
+        bbox_pred = bbox_pred.permute([0, 2, 3, 1]).reshape(-1, self.num_classes, 4 * (self.reg_max + 1)) # N, C, H, W ---> N, H, W, C
+        cls_score = cls_score.permute([0, 2, 3, 1]).reshape(-1, self.num_classes)
 
-        cls_target = cls_target.reshape(-1) # 
-        bbox_targets = bbox_targets.reshape(-1, 4)
-        
+        cls_target = cls_target.reshape(-1,) # N x H x W --> NHW, -1 每个位置的类别index
+        bbox_targets = bbox_targets.reshape(-1, self.num_classes, 4) # NHW, self.num_classes, 4
+        bbox_targets = self.regression_scale(bbox_targets) # NHW, self.num_classes, 4
+
         # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
         bg_class_ind = self.num_classes # 每个位置会分配一个类别Index
-        pos_inds = torch.nonzero(
+        pos_index = torch.nonzero(
             (cls_target >= 0) & (cls_target < bg_class_ind), as_tuple=False
-        ).squeeze(1) # ---> 每个位置的类别Index
+        ).squeeze(1) # N x 1
+
+
 
         score = bbox_pred.new_zeros(bbox_targets.shape)
 
-        if len(pos_inds) > 0: # 有正样本
-            
-            pos_bbox_targets = bbox_targets[pos_inds] # (n * self.num_classes, 4) # 这里的regression target是相对于feature map的偏移量
-            pos_bbox_pred = bbox_pred[pos_inds]  # (n * self.num_classes, 4 * (reg_max + 1))
-            
-            pos_grid_cells = grid_cells[pos_inds]
-            pos_grid_cell_centers = self.grid_cells_to_center(pos_grid_cells) / stride
+        if len(pos_index) > 0: # 有正样本
+            # 回归时，只回归正样本的bbox坐标
+            pos_bbox_targets = bbox_targets[pos_index] # (n, self.num_classes, 4) # 这里的regression target是相对于feature map的偏移量
+            pos_bbox_pred = bbox_pred[pos_index]  # (n, self.num_classes, 4 * (reg_max + 1))
 
+            # 按照类别映射，并按照类别进行scale ---> 根据target进行映射
+            # pos_bbox_targets = torch.gather(pos_bbox_targets, dim=1, index=cls_target)
+            # pos_bbox_pred = torch.gather(pos_bbox_pred, dim=1, index=cls_target)
+            pos_bbox_targets=torch.index_select(pos_bbox_targets,dim=1,index=cls_target)
+            pos_bbox_pred = torch.index_select(pos_bbox_pred, dim=1, index=cls_target)
+
+
+            # 获取score预测值，作为weight
             weight_targets = cls_score.detach().sigmoid()
-            weight_targets = weight_targets.max(dim=1)[0][pos_inds]
+            weight_targets = weight_targets.max(dim=1)[0][pos_index]
+
+
+            # 计算IoU损失
             pos_bbox_pred_corners = self.distribution_project(pos_bbox_pred)
             pos_decode_bbox_pred = distance2bbox(
                 pos_grid_cell_centers, pos_bbox_pred_corners
@@ -172,7 +202,8 @@ class GeneralizedFocalLoss(nn.Module):
 
         # 第一步，分配target
         cls_target, bbox_targets, num_total_samples = self.assign_targets(label_info, stride, image_zize)
-        
+        num_total_samples = max(num_total_samples, 1.0)
+
         # 第二步，计算每部分的loss
         loss_qfl, loss_bbox, loss_dfl, avg_factor = self.loss_single(
             cls_score, # logits before sigmoid: N, num_classes, H, W
