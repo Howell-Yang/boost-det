@@ -1172,7 +1172,7 @@ class GeneralizedFocalLoss(nn.Module):
                     # 我的目的，不是让target更加接近pred，而是让target的分布，在-regmax --> regmax之间更加均匀
                     # 所以，这里使用regression_scale的方式，是错的 -----> 应该计算target_corner的最大值，让这个最大值，接近regmax
                     # 这个值，不应该通过计算梯度来更新，而是通过估计target corner的最大值，来更新
-                cv2.imwrite("bboxes_vis_{}.jpg".format(self.batch_index), image)
+                cv2.imwrite("debug_vis/bboxes_vis_{}.jpg".format(self.batch_index), image)
                 print("==" * 50)
                 print("IOU = ",
                       torch.mean(IoU_score[pos_index]).item(),
@@ -1247,7 +1247,13 @@ if __name__ == "__main__":
     corner_pred = torch.zeros(
         (1, num_classes * 4 * (2 * reg_max + 1), image_size[0] // stride,
          image_size[1] // stride))
+
+    # 构建score_pred和corner_pred, 目标是让损失为0
+    # 16x16 = 256
+    # 32, 32, 64, 64 --> 中心 48, 48 --> 48/16 =  3,
+    score_pred[0, 0, 3, 3] = 1 # 每个位置预测的是分数值 ---> sigmoid后为IoU 
     outputs = (score_pred, corner_pred)  # 模型输出的是每个位置的偏移量
+
     # targets
     label_info = [[{
         "bbox": [32, 32, 64, 64],
@@ -1259,6 +1265,7 @@ if __name__ == "__main__":
 
     # loss
     loss_module = GeneralizedFocalLoss(reg_max=reg_max)
+    loss_module.batch_index = 10000
     loss_qfl, loss_bbox, loss_dfl = loss_module.forward(outputs, label_info)
     print("Losses:")
     print("\tloss_qfl", loss_qfl)

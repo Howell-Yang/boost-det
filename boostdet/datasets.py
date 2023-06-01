@@ -28,8 +28,8 @@ class ShapeDataset(Dataset):
 
         for _ in range(num_objects):
             # 随机选择一个颜色和形状
-            color = np.random.choice(range(len(self.colors)))
-            color = self.colors[color]
+            # color = np.random.choice(range(len(self.colors)))
+            # color = self.colors[color]
             shape = np.random.choice(self.shapes)
 
             # 随机生成形状的参数
@@ -39,6 +39,8 @@ class ShapeDataset(Dataset):
             shape_params = [x, y, x + size, y + size]
 
             # 绘制形状
+            category = self.shapes2label[shape]
+            color = self.colors[category]
             if shape == 'square':
                 draw.rectangle(shape_params, fill=color)
             elif shape == 'circle':
@@ -54,7 +56,7 @@ class ShapeDataset(Dataset):
             # 构建标签
             label = {
                 'bbox': shape_params,
-                'category': self.shapes2label[shape],
+                'category': category,
             }
 
             labels.append(label)

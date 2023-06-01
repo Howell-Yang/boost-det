@@ -78,11 +78,12 @@ def evaluate(model, dataloader):
 
                 # PD
                 colors = [(0, i * 10,  255) for i in range(10)]
-                for cat_idx in range(num_classes):
+                for cat_idx in range(model.num_classes):
                     # decode each class
                     scores = x16_cls_logits[i, :, :, cat_idx].sigmoid() # sigmoid 得分 ----> 对应的是IOU分数
                     corners = x16_reg_logits[i, :, :, cat_idx, :] # H,W,15x4
-                    pos_mask = scores.view(-1) > 0.5 # 选出得分大于0.1的位置
+                    pos_mask = scores.view(-1) > 0.2 # 选出得分大于0.1的位置
+                    pos_scores = scores.view(-1)[pos_mask] # N
                     corners = corners.view(-1, model.num_classes * (2 * model.reg_max + 1)) # Nx4 x 15
                     # print(np.shape(pos_mask))
                     pos_corner_pred = corners[pos_mask]
@@ -119,10 +120,12 @@ def evaluate(model, dataloader):
                     )
                     # print("pos_corner_pred", pos_corner_pred)
                     pos_decode_bbox_pred = pos_decode_bbox_pred * stride
-                    for bbox in pos_decode_bbox_pred.detach().cpu().numpy():
+                    for j, bbox in enumerate(pos_decode_bbox_pred.detach().cpu().numpy()):
                         x1, y1, x2, y2 = list(map(int, bbox))
+                        cur_score = pos_scores[j]
+                        cv2.putText(image, "{:.2f}".format(cur_score), (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                         cv2.rectangle(image, (x1, y1), (x2, y2), colors[cat_idx], 1)
-                cv2.imwrite("./image_{}_{}.png".format(batch, i), image)
+                cv2.imwrite("debug_vis/image_{}_{}.png".format(batch, i), image)
     # mean_ap = np.mean(ap_scores)
     # print(f"mAP: {mean_ap}")
 

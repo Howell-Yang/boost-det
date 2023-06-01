@@ -40,15 +40,15 @@ class FCOS(nn.Module):
         # Define your backbone network here
         repeat = 0
         self.backbone_stride4 = nn.Sequential(
-            ResBlock(5, 64, repeat=repeat, stride=1), # 256x256
-            ResBlock(64, 128, repeat=repeat, stride=2), # 128x128
-            ResBlock(128, 256, repeat=repeat, stride=2), # 64x64,
+            ResBlock(5, 32, repeat=repeat, stride=1), # 256x256
+            ResBlock(32, 32, repeat=repeat, stride=2), # 128x128
+            ResBlock(32, 32, repeat=repeat, stride=2), # 64x64,
         )
         self.backbone_stride16 = nn.Sequential(
-            ResBlock(256, 512, repeat=repeat, stride=2), # 32x32,
-            ResBlock(512, 1024, repeat=repeat, stride=2), # 16x16,
+            ResBlock(32, 32, repeat=repeat, stride=2), # 32x32,
+            ResBlock(32, 32, repeat=repeat, stride=2), # 16x16,
         )
-        in_channels = 1024
+        in_channels = 32
 
         # 直接在输入部分加入embeddig? 也可以在输出部分加入embedding
         x_embedding = torch.arange(256, dtype=torch.float32).unsqueeze(0).unsqueeze(0).unsqueeze(0)/256.0 # 1, 1, 1, 256
