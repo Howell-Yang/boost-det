@@ -59,10 +59,10 @@ class FCOS(nn.Module):
         self.position_embedding = nn.Parameter(xy_embedding, requires_grad=True)
 
         # Define the classification, regression, and centerness heads
-        reg_max = 7
+        self.reg_max = 7
         self.cls_head = nn.Conv2d(in_channels, self.num_classes, kernel_size=3, stride=1, padding=1)
-        self.reg_head = nn.Conv2d(in_channels, self.num_classes * 4 * (2 * reg_max + 1), kernel_size=3, stride=1, padding=1)
-        self.gfl_loss = GeneralizedFocalLoss(reg_max=reg_max)
+        self.reg_head = nn.Conv2d(in_channels, self.num_classes * 4 * (2 * self.reg_max + 1), kernel_size=3, stride=1, padding=1)
+        self.gfl_loss = GeneralizedFocalLoss(reg_max=self.reg_max)
 
     def forward(self, x):
         # Forward pass through the backbone network

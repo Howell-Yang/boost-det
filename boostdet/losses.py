@@ -1059,8 +1059,8 @@ class GeneralizedFocalLoss(nn.Module):
         pos_index = torch.nonzero(
             (cls_target >= 0) & (cls_target < bg_class_ind) & corner_valid,
             as_tuple=False).squeeze(1)  # N x 1
-        IoU_score = corner_pred.new_zeros(cls_target.shape)
-
+        IoU_score = corner_pred.new_zeros(cls_target.shape) # HxW, 每个位置只考虑一种case
+        cls_mask = corner_pred.new_zeros(cls_target.shape)
         if len(pos_index) > 0:  # 有正样本
             pos_cls_target = cls_target[pos_index]  # 仅训练正样本？
             pos_corner_scale = self.regression_scale[0, pos_cls_target, :]
@@ -1138,7 +1138,7 @@ class GeneralizedFocalLoss(nn.Module):
             pos_decode_bbox_pred = distance2bbox( # 这里需要处理regression_scale, 按照类别进行scale
                 pos_grid_centers,
                 pos_corner_pred,
-                max_shape=image_size  # x1 = x1.clamp(min=0, max=max_shape[1])
+                max_shape=[image_size[0] // stride, image_size[1] // stride]  # x1 = x1.clamp(min=0, max=max_shape[1])
             )
             pos_decode_bbox_targets = pos_bbox_targets.view(
                 -1, 4) / stride  # 从原图到feature map ---> 在feature map上的bbox
@@ -1149,6 +1149,8 @@ class GeneralizedFocalLoss(nn.Module):
             IoU_score[pos_index] = bbox_overlaps(pos_decode_bbox_pred.detach(),
                                                  pos_decode_bbox_targets,
                                                  is_aligned=True)
+            
+            cls_mask[pos_index] = 1 # 只计算正样本的分类损失
             if self.batch_index % 1000 == 0:
                 # 绘制targets & predicted
                 image = np.zeros((image_size[0], image_size[1], 3),
@@ -1194,7 +1196,7 @@ class GeneralizedFocalLoss(nn.Module):
             loss_qfl = self.loss_qfl(
                 score_pred,
                 (cls_target, IoU_score),  # 这里只会计算正样本的IoU
-                weight=None,
+                weight=cls_mask,
                 avg_factor=num_total_samples,
             )
             assert loss_qfl > 0, "loss_qfl should > 0"
