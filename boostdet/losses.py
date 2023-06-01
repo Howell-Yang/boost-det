@@ -993,14 +993,14 @@ class GeneralizedFocalLoss(nn.Module):
         # assert torch.max(torch.abs(corner_targets)[:, :, :, 3, :]) > 0, "corner_targets should not be all zero"
 
         # 如果某个类别没有目标，那么不更新scale
-        if self.batch_index < 100:
+        if self.batch_index < 1000:
             for cls_index in range(self.num_classes):
                 mean_offset = torch.max(torch.abs(corner_targets[:, :, :, cls_index, :])).detach()
                 if mean_offset < 1e-5:
                     continue
                 mean_offset = mean_offset + 1e-5  # avoid nan
-                self.regression_scale[0, cls_index, 0] = self.regression_scale[0, cls_index, 0] * 0.999 + (
-                    self.reg_max - 1.0) / mean_offset * 0.001
+                self.regression_scale[0, cls_index, 0] = self.regression_scale[0, cls_index, 0] * 0.99 + (
+                    self.reg_max - 1.0) / mean_offset * 0.01
         # print("mean_offset", mean_offset)
         # print("regression_scale", self.regression_scale)
         # 目的是让最大值scale到self.regmax/2.0
@@ -1151,7 +1151,7 @@ class GeneralizedFocalLoss(nn.Module):
                                                  is_aligned=True)
             
             cls_mask[pos_index] = 1 # 只计算正样本的分类损失
-            if self.batch_index % 1000 == 0:
+            if self.batch_index % 100 == 0:
                 # 绘制targets & predicted
                 image = np.zeros((image_size[0], image_size[1], 3),
                                  dtype=np.uint8)

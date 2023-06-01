@@ -82,7 +82,7 @@ def evaluate(model, dataloader):
                     # decode each class
                     scores = x16_cls_logits[i, :, :, cat_idx].sigmoid() # sigmoid 得分 ----> 对应的是IOU分数
                     corners = x16_reg_logits[i, :, :, cat_idx, :] # H,W,15x4
-                    pos_mask = scores.view(-1) > 0.1 # 选出得分大于0.1的位置
+                    pos_mask = scores.view(-1) > 0.5 # 选出得分大于0.1的位置
                     corners = corners.view(-1, model.num_classes * (2 * model.reg_max + 1)) # Nx4 x 15
                     # print(np.shape(pos_mask))
                     pos_corner_pred = corners[pos_mask]
@@ -153,7 +153,7 @@ max_lr = 1e-3
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # 创建ShapeDataset实例
-num_samples = 1600
+num_samples = 16000
 train_dataset = ShapeDataset(image_size, num_samples, colors, shapes)
 val_dataset = ShapeDataset(image_size, 16, colors, shapes)
 train_dataloader = DataLoader(train_dataset,
