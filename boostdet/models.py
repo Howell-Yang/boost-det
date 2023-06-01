@@ -9,39 +9,46 @@ import numpy as np
 import cv2
 from losses import GeneralizedFocalLoss
 
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, repeat=3, stride=1):
+        super(ResBlock, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.repeat = repeat
+        self.stride = stride
+        self.in_project = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.blocks = nn.ModuleList()
+        for i in range(repeat):
+            self.blocks.append(nn.Sequential(
+                nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True)
+            ))
+        self.out_project = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+    def forward(self, x):
+        x = self.in_project(x)
+        for i in range(self.repeat):
+            x_out = self.blocks[i](x)
+            x = x_out + x
+        x = self.out_project(x)
+        return x
+
 class FCOS(nn.Module):
     def __init__(self, num_classes):
         super(FCOS, self).__init__()
         self.num_classes = num_classes
         # Define your backbone network here
+        repeat = 0
         self.backbone_stride4 = nn.Sequential(
-            nn.Conv2d(5, 64, kernel_size=3, stride=1, padding=1), # 256x256
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1), # 128x128
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1), # 64x64
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            ResBlock(5, 64, repeat=repeat, stride=1), # 256x256
+            ResBlock(64, 128, repeat=repeat, stride=2), # 128x128
+            ResBlock(128, 256, repeat=repeat, stride=2), # 64x64,
         )
         self.backbone_stride16 = nn.Sequential(
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # 32x32
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1), # 16x16
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            ResBlock(256, 512, repeat=repeat, stride=2), # 32x32,
+            ResBlock(512, 1024, repeat=repeat, stride=2), # 16x16,
         )
+        in_channels = 1024
 
         # 直接在输入部分加入embeddig? 也可以在输出部分加入embedding
         x_embedding = torch.arange(256, dtype=torch.float32).unsqueeze(0).unsqueeze(0).unsqueeze(0)/256.0 # 1, 1, 1, 256
@@ -52,7 +59,6 @@ class FCOS(nn.Module):
         self.position_embedding = nn.Parameter(xy_embedding, requires_grad=True)
 
         # Define the classification, regression, and centerness heads
-        in_channels = 256
         reg_max = 7
         self.cls_head = nn.Conv2d(in_channels, self.num_classes, kernel_size=3, stride=1, padding=1)
         self.reg_head = nn.Conv2d(in_channels, self.num_classes * 4 * (2 * reg_max + 1), kernel_size=3, stride=1, padding=1)
@@ -68,7 +74,7 @@ class FCOS(nn.Module):
         x = torch.cat([x, position_embedding], dim=1) 
         x4 = self.backbone_stride4(x)
         x16 = self.backbone_stride16(x4)
-    
+
         x16_cls_logits = self.cls_head(x16)
         x16_reg_logits = self.reg_head(x16)
         return x16_cls_logits, x16_reg_logits
