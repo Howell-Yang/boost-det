@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import functools
-
+from utils import distance2bbox
 import torch.nn.functional as F
 import numpy as np
 import math
@@ -832,8 +832,8 @@ class Integral(nn.Module):
                 offsets from the box center in four directions, shape (N, 4).
         """
         shape = x.size()
-        x = F.softmax(x.reshape(*shape[:-1], 4, 2 * self.reg_max + 1), dim=-1)
-        x = F.linear(x, self.project.type_as(x)).reshape(*shape[:-1], 4)
+        x = F.softmax(x.reshape(-1, 2 * self.reg_max + 1), dim=-1)
+        x = F.linear(x, self.project.type_as(x)).reshape(-1, 4)
         return x
 
 class GeneralizedFocalLoss(nn.Module):
@@ -927,24 +927,25 @@ class GeneralizedFocalLoss(nn.Module):
 
     def loss_single(
         self,
-        cls_score, # logits before sigmoid: N, num_classes, H, W
-        bbox_pred, # logits before sigmoid: N, 4 * num_classes *(reg_max + 1), H, W
+        score_pre, # logits before sigmoid: N, num_classes, H, W
+        corner_pred, # logits before sigmoid: N, 4 * num_classes *(reg_max + 1), H, W
         cls_target, # N, H, W
         bbox_targets, # N, H, W, num_classes, 4
         corner_targets,
         stride,
         num_total_samples,
+        image_size,
     ):
 
-        # cls_score = cls_score.reshape(-1, self.num_classes)  # N, num_classes, H, W
-        # bbox_pred = bbox_pred.reshape(-1, self.num_classes, 4 * (self.reg_max + 1)) # regrssion ---> 不同类别用的相同的回归，这里是不合理的
-        bbox_pred = bbox_pred.permute([0, 2, 3, 1]).reshape(-1, self.num_classes, 4 * (2 * self.reg_max + 1)) # N, C, H, W ---> N, H, W, C
-        cls_score = cls_score.permute([0, 2, 3, 1]).reshape(-1, self.num_classes)
+        # score_pre = score_pre.reshape(-1, self.num_classes)  # N, num_classes, H, W
+        # corner_pred = corner_pred.reshape(-1, self.num_classes, 4 * (self.reg_max + 1)) # regrssion ---> 不同类别用的相同的回归，这里是不合理的
+        corner_pred = corner_pred.permute([0, 2, 3, 1]).reshape(-1, self.num_classes, 4 * (2 * self.reg_max + 1)) # N, C, H, W ---> N, H, W, C
+        score_pre = score_pre.permute([0, 2, 3, 1]).reshape(-1, self.num_classes)
 
         cls_target = cls_target.reshape(-1,) # N x H x W --> NHW, -1 每个位置的类别index
         bbox_targets = bbox_targets.reshape(-1, self.num_classes, 4) # NHW, self.num_classes, 4
         corner_targets = corner_targets.reshape(-1, self.num_classes, 4) # NHW, self.num_classes, 4
-        corner_targets = self.regression_scale * corner_targets # NHW, self.num_classes, 4
+        corner_targets = self.regression_scale * corner_targets # (NHW, self.num_classes, 4) x (1, num_classes, 1)
 
         # FG cat_id: [0, num_classes -1], BG cat_id: num_classes
         bg_class_ind = self.num_classes # 每个位置会分配一个类别Index
@@ -952,116 +953,120 @@ class GeneralizedFocalLoss(nn.Module):
             (cls_target >= 0) & (cls_target < bg_class_ind), as_tuple=False
         ).squeeze(1) # N x 1
 
-
-
-        score = bbox_pred.new_zeros(bbox_targets.shape)
+        IoU_score = corner_pred.new_zeros(cls_target.shape)
 
         if len(pos_index) > 0: # 有正样本
             pos_cls_target = cls_target[pos_index] # 仅训练正样本？
 
             # 回归时，只回归正样本的bbox坐标
-            pos_bbox_pred = bbox_pred[pos_index]  # (n, self.num_classes, 4 * (reg_max + 1))
+            pos_corner_pred = corner_pred[pos_index]  # (n, self.num_classes, 4 * (reg_max + 1))
             pos_bbox_targets = bbox_targets[pos_index] # (n, self.num_classes, 4) # 这里的regression target是相对于feature map的偏移量
+            # 注意: 这里的偏移量，左右/上下的方向是相反的；所以通常情况下，两个都是正数
             pos_corner_targets = corner_targets[pos_index] # (n, self.num_classes, 4) # 这里的regression target是相对于feature map的偏移量
 
-            # 按照类别映射，并按照类别进行scale ---> 根据target进行映射
-            # pos_bbox_targets = torch.gather(pos_bbox_targets, dim=1, index=cls_target)
-            # pos_bbox_pred = torch.gather(pos_bbox_pred, dim=1, index=cls_target)
- 
-            print(np.shape(pos_index), pos_index) # 8 --> 51,  52,  67,  68, 102, 103, 118, 119
-            print(np.shape(bbox_pred), np.shape(pos_bbox_pred)) # 8, 4, 4 x (2*7+1)
-            print(np.shape(bbox_targets), np.shape(pos_bbox_targets)) # 8, 4, 4
-            print(np.shape(corner_targets), np.shape(pos_corner_targets)) # 8, 4, 4
+            pos_cls_target = pos_cls_target.unsqueeze(1).unsqueeze(2) # 8x1x60
+            pos_corner_pred = pos_corner_pred.gather(dim=1, index=pos_cls_target.expand(-1, -1, pos_corner_pred.size(-1)))     # 8x4x60
+            pos_bbox_targets=pos_bbox_targets.gather(dim=1,index=pos_cls_target.expand(-1, -1, pos_bbox_targets.size(-1)))
+            pos_corner_targets = pos_corner_targets.gather(dim=1, index=pos_cls_target.expand(-1, -1, pos_corner_targets.size(-1)))
+            # print("===selected====", np.shape(pos_cls_target), pos_cls_target) # 8x1x1 # 预期 8x60， 实际8x8x60
+            pos_corner_pred = pos_corner_pred.view(-1, 2 * self.reg_max + 1)
+            pos_corner_targets = pos_corner_targets.view(-1)
 
-            # pos_bbox_pred = torch.index_select(pos_bbox_pred, dim=1, index=pos_cls_target) # 8, 4, 60
-            # pos_bbox_targets=torch.index_select(pos_bbox_targets,dim=1,index=pos_cls_target)
-            # pos_corner_targets = torch.index_select(pos_corner_targets, dim=1, index=pos_cls_target)
-            # print("===selected====", pos_cls_target) # 预期 8x60， 实际8x8x60
-            # print(np.shape(pos_bbox_pred))
-            # exit(0)
-            pos_cls_target = pos_cls_target.unsqueeze(1).unsqueeze(2) # 8x1x1
-            pos_bbox_pred_v2 = pos_bbox_pred.gather(dim=1, index=pos_cls_target)     # 8x4x60
-            # pos_bbox_targets=torch.index_select(pos_bbox_targets,dim=1,index=pos_cls_target)
-            # pos_corner_targets = torch.index_select(pos_corner_targets, dim=1, index=pos_cls_target)
-            print("===selected====", np.shape(pos_cls_target)) # 8x1x1 # 预期 8x60， 实际8x8x60
-            print(np.shape(pos_bbox_pred_v2))
-            exit(0)
             # 获取score预测值，作为weight
-            weight_targets = cls_score.detach().sigmoid()
+            weight_targets = score_pre.detach().sigmoid()
             weight_targets = weight_targets.max(dim=1)[0][pos_index]
+            # weight_targets = weight_targets[:, None].expand(-1, 4).reshape(-1)
+            # print(np.shape(pos_corner_pred))
+            # print(np.shape(pos_bbox_targets), pos_bbox_targets)
+            # print(np.shape(pos_corner_targets), pos_corner_targets)
+            # print(np.shape(weight_targets), weight_targets) # 8x1
 
             # dfl loss
             loss_dfl = self.loss_dfl(
-                pos_bbox_pred,
-                pos_bbox_targets,
-                weight=weight_targets[:, None].expand(-1, 4).reshape(-1),
+                pos_corner_pred, # 8 x 60 --> 8x4x15 --> 32x15
+                pos_corner_targets + self.reg_max, # 8 x 4 = 32 x 1, 需要正确的映射0的位置
+                weight=weight_targets[:, None].expand(-1, 4).reshape(-1), # 32 x 1
                 avg_factor=4.0,
             )
 
             # 计算IoU损失
-            loss_bbox = bbox_pred.sum() * 0
-            # pos_bbox_pred_corners = self.distribution_project(pos_bbox_pred)
-            # pos_decode_bbox_pred = distance2bbox(
-            #     pos_grid_cell_centers, pos_bbox_pred_corners
-            # )
-            # pos_decode_bbox_targets = pos_bbox_targets / stride
-            # score[pos_inds] = bbox_overlaps(
-            #     pos_decode_bbox_pred.detach(), pos_decode_bbox_targets, is_aligned=True
-            # )
-            # pred_corners = pos_bbox_pred.reshape(-1, self.reg_max + 1)
+            B = score_pre.size(0)
+            x_coord = torch.arange(image_size[0]//stride, dtype=torch.int32).unsqueeze(1) # 32 x 1
+            y_coord = torch.arange(image_size[1]//stride, dtype=torch.int32).unsqueeze(0) # 1 x 32
+            x_coord = x_coord.expand(-1, image_size[1]//stride) # 32 x 32 ---> x[0][0] != x[1][0]
+            y_coord = y_coord.expand(image_size[0]//stride, -1)
+            xy_coord = torch.stack([x_coord, y_coord], dim=2) # 32 x 32 x 2
+            xy_coord = xy_coord.unsqueeze(0).expand(B, -1, -1, -1)
+    
+            grid_centers = xy_coord.reshape(-1, 2) # x, y 中心点坐标
+            pos_grid_centers = grid_centers[pos_index]
+            pos_corner_pred = self.distribution_project(pos_corner_pred) # 32x15 ---> 8x4
+            # print("pos_corner_pred", pos_corner_pred)
+            pos_decode_bbox_pred = distance2bbox(
+                pos_grid_centers, pos_corner_pred
+            )
+            pos_decode_bbox_targets = pos_bbox_targets.view(-1, 4) / stride # 从原图到feature map
+            # print("pos_decode_bbox_targets", np.shape(pos_decode_bbox_targets)) # 8,4 
+            # print("pos_decode_bbox_pred", np.shape(pos_decode_bbox_pred)) # 8, 4
+            # exit(0)
+            # 一对一，计算IoU
+            IoU_score[pos_index] = bbox_overlaps(
+                pos_decode_bbox_pred.detach(), pos_decode_bbox_targets, is_aligned=True
+            )
+            # print(IoU_score[pos_index])
+            # pred_corners = pos_corner_pred.reshape(-1, self.reg_max + 1)
             # target_corners = bbox2distance(
             #     pos_grid_cell_centers, pos_decode_bbox_targets, self.reg_max
             # ).reshape(-1)
 
             # # IoU loss
-            # loss_bbox = self.loss_bbox(
-            #     pos_decode_bbox_pred,
-            #     pos_decode_bbox_targets,
-            #     weight=weight_targets,
-            #     avg_factor=1.0,
-            # )
-            
-            # Cls Loss
-            loss_qfl = bbox_pred.sum() * 0
+            loss_bbox = self.loss_bbox(
+                pos_decode_bbox_pred, # 8 x 4
+                pos_decode_bbox_targets, # 8 x 4
+                weight=weight_targets[:, None], # 32 x 1
+                avg_factor=1.0,
+            )
 
+            # qfl loss
+            loss_qfl = self.loss_qfl(
+                score_pre,
+                (cls_target, IoU_score), # 这里只会计算正样本的IoU?
+                weight=None,
+                avg_factor=num_total_samples,
+            )
         else: # 没有正样本
-            loss_bbox = bbox_pred.sum() * 0
-            loss_dfl = bbox_pred.sum() * 0
-            loss_qfl = bbox_pred.sum() * 0
-            weight_targets = torch.tensor(0).to(cls_score.device)
+            loss_bbox = corner_pred.sum() * 0
+            loss_dfl = corner_pred.sum() * 0
+            loss_qfl = corner_pred.sum() * 0
+            weight_targets = torch.tensor(0).to(score_pre.device)
 
-        # qfl loss
-        # loss_qfl = self.loss_qfl(
-        #     cls_score,
-        #     (cls_target, score),
-        #     weight=None,
-        #     avg_factor=num_total_samples,
-        # )
+
 
         return loss_qfl, loss_bbox, loss_dfl, weight_targets.sum()
 
     def forward(self, outputs, label_info):
-        cls_score, bbox_pred = outputs # 假设只有一个level的输出
+        score_pre, corner_pred = outputs # 假设只有一个level的输出
         stride = 16 # 这个level的stride
-        image_zize = (256, 256)
+        image_size = (256, 256)
 
         # 第一步，分配target
-        cls_targets, bbox_targets, corner_targets, num_total_samples = self.assign_targets(label_info, stride, image_zize)
+        cls_targets, bbox_targets, corner_targets, num_total_samples = self.assign_targets(label_info, stride, image_size)
         num_total_samples = max(num_total_samples, 1.0)
 
         # 第二步，计算每部分的loss
         loss_qfl, loss_bbox, loss_dfl, avg_factor = self.loss_single(
-            cls_score, # logits before sigmoid: N, num_classes, H, W
-            bbox_pred, # logits before sigmoid: N, 4 * num_classes *(reg_max + 1), H, W
+            score_pre, # logits before sigmoid: N, num_classes, H, W
+            corner_pred, # logits before sigmoid: N, 4 * num_classes *(reg_max + 1), H, W
             cls_targets, #
             bbox_targets,
             corner_targets,
             stride,
             num_total_samples,
+            image_size,
         )
 
         # 第三步，计算总loss
-        avg_factor = max(1.0, sum(avg_factor).item())
+        avg_factor = max(1.0, avg_factor.item())
         loss_bbox = loss_bbox / avg_factor  #IoU损失，与bbox个数有关
         loss_dfl = loss_dfl / avg_factor # DFL损失，与bbox个数有关
         return loss_qfl, loss_bbox, loss_dfl
@@ -1072,11 +1077,10 @@ if __name__ == "__main__":
     num_classes = 4
     stride = 16
     reg_max = 7 # 正负各7
-    image_zize = (256, 256)
-    cls_score = torch.zeros((1, num_classes, image_zize[0]//stride, image_zize[1]//stride)) # N, C, H, W
-    bbox_pred = torch.zeros((1, num_classes * 4 * (2 * reg_max + 1), image_zize[0]//stride, image_zize[1]//stride))
-    outputs = (cls_score, bbox_pred)
-
+    image_size = (256, 256)
+    score_pre = torch.zeros((1, num_classes, image_size[0]//stride, image_size[1]//stride)) # N, C, H, W
+    corner_pred = torch.zeros((1, num_classes * 4 * (2 * reg_max + 1), image_size[0]//stride, image_size[1]//stride))
+    outputs = (score_pre, corner_pred) # 模型输出的是每个位置的偏移量
     # targets
     label_info = [
         [{"bbox": [32, 32, 64, 64], "category": 0}, {"bbox": [64, 64, 128, 128], "category": 1}]
@@ -1084,5 +1088,10 @@ if __name__ == "__main__":
 
     # loss
     loss_module = GeneralizedFocalLoss(reg_max=reg_max)
-    loss = loss_module.forward(outputs, label_info)
-    print(loss)
+    loss_qfl, loss_bbox, loss_dfl = loss_module.forward(outputs, label_info)
+    print("Losses:")
+    print("\tloss_qfl", loss_qfl) 
+    # cls loss ---> predicted IoU ----> 这里理论上应该对应每个anchor的IoU
+    # 分类和回归，拆分成两个任务；直接预测bbox输出的IoU，导致实际这里的loss包含了bbox预测
+    print("\tloss_bbox", loss_bbox)
+    print("\tloss_dfl", loss_dfl) # corner loss

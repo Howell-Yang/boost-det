@@ -57,12 +57,12 @@ class ShapeDataset(Dataset):
             labels.append(label)
         
         # 可视化图像
-        import cv2
-        draw_image = np.array(image)
-        for label in labels:
-            print(label['bbox'])
-            cv2.rectangle(draw_image, (label['bbox'][0], label['bbox'][1]), (label['bbox'][2], label['bbox'][3]), (0, 0, 0), 1)
-        cv2.imwrite("dataset_sample_{}.jpg".format(self.count_index), draw_image)
+        # import cv2
+        # draw_image = np.array(image)
+        # for label in labels:
+        #     print(label['bbox'])
+        #     cv2.rectangle(draw_image, (label['bbox'][0], label['bbox'][1]), (label['bbox'][2], label['bbox'][3]), (0, 0, 0), 1)
+        # cv2.imwrite("dataset_sample_{}.jpg".format(self.count_index), draw_image)
         self.count_index += 1
     
         # 将图像转换为张量并进行归一化

@@ -55,7 +55,7 @@ class FCOS(nn.Module):
         in_channels = 256
         reg_max = 7
         self.cls_head = nn.Conv2d(in_channels, self.num_classes, kernel_size=3, stride=1, padding=1)
-        self.reg_head = nn.Conv2d(in_channels, self.num_classes * 4 * (reg_max + 1), kernel_size=3, stride=1, padding=1)
+        self.reg_head = nn.Conv2d(in_channels, self.num_classes * 4 * (2 * reg_max + 1), kernel_size=3, stride=1, padding=1)
         self.gfl_loss = GeneralizedFocalLoss(reg_max=reg_max)
 
     def forward(self, x):
@@ -69,12 +69,18 @@ class FCOS(nn.Module):
         x4 = self.backbone_stride4(x)
         x16 = self.backbone_stride16(x4)
     
-        x16_reg_logits = self.reg_head(x16)
         x16_cls_logits = self.cls_head(x16)
-        return x16_reg_logits, x16_cls_logits
+        x16_reg_logits = self.reg_head(x16)
+        return x16_cls_logits, x16_reg_logits
 
-    def loss(self, rpn_logits, x16_reg_logits, x16_cls_logits, targets):
-        loss_qfl, loss_bbox, loss_dfl  = self.gfl_loss(rpn_logits, x16_reg_logits, x16_cls_logits, targets)
+    def loss(self, x16_cls_logits, x16_reg_logits, targets):
+        loss_qfl, loss_bbox, loss_dfl  = self.gfl_loss((x16_cls_logits, x16_reg_logits) , targets)
         loss = loss_qfl + loss_bbox + loss_dfl
-        return loss
+        loss_dict = dict(
+            loss_qfl = loss_qfl,
+            loss_bbox = loss_bbox,
+            loss_dfl = loss_dfl,
+            loss = loss
+        )
+        return loss_dict
 
